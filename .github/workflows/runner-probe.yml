@@ -1,0 +1,16 @@
+name: Fork runner probe
+
+on:
+  push:
+    branches: [ci-smoke/runner-probe-20261124]
+
+permissions:
+  contents: read
+
+jobs:
+  runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Confirm runner start
+        run: printf '%s\n' 'Fork runner started'
