@@ -10,7 +10,9 @@
 # failed screenshot stops the run before anything is sent. The upload
 # uses the App Store Connect API key when APP_STORE_CONNECT_KEY_PATH, APP_STORE_CONNECT_KEY_ID and
 # APP_STORE_CONNECT_ISSUER_ID are set, and otherwise the Apple account Xcode is signed in with. The
-# build number is <YYMMDD>.<count of the day>; the script writes it into the spec after the upload.
+# build number and version come from iosApp/project.yml.
+#
+# --archive-only verifies the version and build number in a local device archive without uploading.
 #
 # IOS_SIMULATOR names the simulator to use (default: the first single-screen iPhone that is
 # available; the two-screen "Duo" needs a display chosen for each screenshot).
@@ -22,6 +24,12 @@ fail() {
   echo "error: $*" >&2
   exit 1
 }
+
+archive_only=false
+if [ "$#" -gt 0 ]; then
+  [ "$#" -eq 1 ] && [ "$1" = "--archive-only" ] || fail "usage: build-ios.sh [--archive-only]"
+  archive_only=true
+fi
 
 spec=iosApp/project.yml
 prop() {
@@ -76,30 +84,33 @@ choose_upload_auth() {
   fi
 }
 
-# Archive for a device and send the build to TestFlight.
-upload() {
-  local today current build version out
+archive() {
+  local out=$1
+  shift
+  local info archived_version archived_build
 
-  # The build number is <UTC day as YYMMDD>.<count of the day>: the number in the spec plus one on the
-  # same day, the first of the day otherwise. It is written back after the upload.
-  today=$(date -u +%y%m%d)
-  current=$(prop CURRENT_PROJECT_VERSION)
-  if [[ "$current" =~ ^$today\.([0-9]+)$ ]]; then
-    build="$today.$((BASH_REMATCH[1] + 1))"
-  else
-    build="$today.1"
-  fi
-  version=$(prop MARKETING_VERSION)
-
-  out=build/ios-release
   rm -rf "$out"
   mkdir -p "$out"
   (cd iosApp && xcodegen generate --quiet)
   echo "Archive: $version ($build)"
   xcodebuild -project iosApp/Construct.xcodeproj -scheme Construct -configuration Release \
     -destination generic/platform=iOS -derivedDataPath build/ios-device \
-    -archivePath "$out/Construct.xcarchive" CURRENT_PROJECT_VERSION="$build" \
-    "${auth[@]}" -quiet archive
+    -archivePath "$out/Construct.xcarchive" "$@" -quiet archive
+
+  info="$out/Construct.xcarchive/Products/Applications/Construct.app/Info.plist"
+  archived_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info") \
+    || fail "could not read the app version from the archive"
+  archived_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info") \
+    || fail "could not read the build number from the archive"
+  if [ "$archived_version" != "$version" ] || [ "$archived_build" != "$build" ]; then
+    fail "archive version $archived_version ($archived_build) does not match $version ($build) in $spec"
+  fi
+  echo "Verified archive: $archived_version ($archived_build) at $out/Construct.xcarchive"
+}
+
+upload() {
+  local out=build/ios-release
+  archive "$out" "${auth[@]}"
 
   cat >"$out/ExportOptions.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -117,12 +128,26 @@ EOF
   xcodebuild -exportArchive -archivePath "$out/Construct.xcarchive" \
     -exportOptionsPlist "$out/ExportOptions.plist" -exportPath "$out/export" \
     "${auth[@]}" -quiet
-  sed -i '' -E "s/^( *CURRENT_PROJECT_VERSION: ).*/\1\"$build\"/" "$spec"
   echo "Sent $version ($build) to App Store Connect. Processing takes some minutes; the build then"
   echo "shows in TestFlight for the internal group."
 }
 
+if [ "$is_final" = YES ] || [ "$archive_only" = true ]; then
+  version=$(prop MARKETING_VERSION)
+  build=$(prop CURRENT_PROJECT_VERSION)
+  [ -n "$version" ] || fail "MARKETING_VERSION is not set in $spec"
+  [ -n "$build" ] || fail "CURRENT_PROJECT_VERSION is not set in $spec"
+fi
+
+if [ "$archive_only" = true ]; then
+  archive build/ios-archive-check CODE_SIGNING_ALLOWED=NO
+  exit 0
+fi
+
 if [ "$is_final" = YES ]; then
+  git diff --quiet HEAD -- || fail "check out a clean merged commit before uploading"
+  git merge-base --is-ancestor HEAD refs/remotes/origin/main \
+    || fail "fetch origin main and check out the merged commit before uploading"
   choose_upload_auth
 fi
 

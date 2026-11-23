@@ -320,15 +320,22 @@ should point at JDK 17; without it the script looks for one, also in Homebrew.
 - When the id is final, the script first makes the same Simulator build and screenshots, for those
   who do not have the TestFlight build. Then it archives the Release build for a device with
   automatic signing and sends it to TestFlight; a failed screenshot stops the run before anything
-  is sent. The build number is
-  `<YYMMDD>.<count of the day>` (the UTC day, as in `261122.2`): one more than
-  `CURRENT_PROJECT_VERSION` in `iosApp/project.yml` when that is from the same day, `.1` otherwise;
-  after the upload the script writes it there. Raise `MARKETING_VERSION` for a new version. The
+  is sent. Set the exact TestFlight build number in `CURRENT_PROJECT_VERSION` in
+  `iosApp/project.yml` as part of the feature pull request. Use `<YYMMDD>.<count of the day>`
+  in UTC (for example, `261122.2`). Before merging, check current `main` and App Store Connect
+  and update the pull request if the number would collide or fall behind. Fetch `origin/main`
+  and run the upload from a clean checkout of the merged commit. Before uploading, the script checks
+  the archive's version and build number against the project and leaves the project file unchanged.
+  Keep `MARKETING_VERSION` unless the release calls for a new app version. The
   upload uses the App Store Connect API key when `APP_STORE_CONNECT_KEY_PATH` (the `.p8` file, kept
   outside the repository), `APP_STORE_CONNECT_KEY_ID` and `APP_STORE_CONNECT_ISSUER_ID` are all set,
   and otherwise the Apple account Xcode is signed in with (Xcode, Settings, Accounts). With neither,
   or with only some of the three variables, it stops before building. The key values are passed to
   `xcodebuild` and never printed.
+
+Run `scripts/build-ios.sh --archive-only` to build an unsigned device archive in
+`build/ios-archive-check` and verify its version and build number locally. This mode skips the
+Simulator and does not sign in to App Store Connect or upload.
 
 App Store Connect processes a build for some minutes. It then shows in TestFlight for the testers of
 an internal group; with automatic distribution on that group, every new build reaches them by
