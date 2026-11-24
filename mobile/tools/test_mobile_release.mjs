@@ -17,7 +17,7 @@ test("release source must be the explicitly confirmed checkout of protected cano
         'case "$*" in',
         '  "rev-parse HEAD") printf "%s\\n" "$TEST_CHECKOUT" ;;',
         '  "status --porcelain=v1 --untracked-files=all") printf "%s" "$TEST_STATUS" ;;',
-        '  "ls-remote --exit-code https://github.com/constructorfabric/construct.git refs/heads/main")',
+        '  "ls-remote --exit-code https://github.com/"*".git refs/heads/main")',
         '    printf "%s\\trefs/heads/main\\n" "$TEST_MAIN" ;;',
         "  *) exit 2 ;;",
         "esac",
@@ -53,6 +53,10 @@ test("release source must be the explicitly confirmed checkout of protected cano
     const guard = (overrides, ...args) => spawnSync("bash", [script, ...args],
         { cwd: fixture, env: { ...base, ...overrides }, encoding: "utf8" });
     assert.equal(guard({}).status, 0);
+    const trusted = '["constructorfabric/construct","fork/construct"]';
+    assert.equal(guard({ RELEASE_REPOSITORIES: '["fork/construct"]' }).status, 1);
+    assert.match(guard({ GITHUB_REPOSITORY: "fork/construct", RELEASE_REPOSITORIES: '[]' }).stderr, /canonical main/);
+    assert.equal(guard({ GITHUB_REPOSITORY: "fork/construct", RELEASE_REPOSITORIES: trusted, TEST_MAIN: other }).status, 1);
     for (const [name, value, error] of [
         ["GITHUB_EVENT_NAME", "pull_request", /dispatch/],
         ["RELEASE_CONFIRMED", "false", /confirm/],

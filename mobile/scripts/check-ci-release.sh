@@ -8,7 +8,8 @@ fail() {
 
 [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] &&
   [ "${RELEASE_CONFIRMED:-}" = true ] || fail "dispatch the release explicitly and confirm it"
-[ "${GITHUB_REPOSITORY:-}" = constructorfabric/construct ] &&
+jq -e --arg repo "${GITHUB_REPOSITORY:-}" 'index($repo) != null' >/dev/null \
+  <<< "${RELEASE_REPOSITORIES:-[\"constructorfabric/construct\"]}" &&
   [ "${GITHUB_REF:-}" = refs/heads/main ] &&
   [ "${GITHUB_REF_PROTECTED:-}" = true ] || fail "a release requires protected canonical main"
 [[ "${RELEASE_SOURCE_SHA:-}" =~ ^[0-9a-f]{40}$ ]] &&
@@ -17,7 +18,7 @@ fail() {
 checkout_status=$(git status --porcelain=v1 --untracked-files=all)
 [ -z "$checkout_status" ] || fail "a release requires a clean checkout"
 
-canonical_ref=$(git ls-remote --exit-code https://github.com/constructorfabric/construct.git refs/heads/main)
+canonical_ref=$(git ls-remote --exit-code https://github.com/$GITHUB_REPOSITORY.git refs/heads/main)
 [ "${canonical_ref%%$'\t'*}" = "$RELEASE_SOURCE_SHA" ] || fail "the release SHA is no longer canonical main"
 
 if [ "$#" -eq 0 ]; then

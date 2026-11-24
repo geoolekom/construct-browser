@@ -206,12 +206,13 @@ jobs:
 
   publish:
     if: >-
-      github.repository == 'constructorfabric/construct' &&
+      contains(fromJSON(vars.RELEASE_REPOSITORIES || '["constructorfabric/construct"]'), github.repository) &&
       (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref_type == 'tag')) &&
       !cancelled() && needs.version.result == 'success' &&
-      needs.build-linux.result == 'success' && needs.smoke.result == 'success'
-    needs: [version, build-linux, smoke, build-windows]
+      needs.build-linux.result == 'success' && needs.build.result == 'success' &&
+      needs.smoke.result == 'success'
+    needs: [version, build-linux, build, smoke, build-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -224,7 +225,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
-          pattern: '*-deb'
+          pattern: '*-{deb,dmg}'
           merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         id: download-windows
@@ -242,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
           installer=construct-browser-x64-Setup.exe
-          packages=(*.deb)
+          packages=(*.deb *.dmg)
           windows_available=false
           for file in "${packages[@]}"; do
             test -s "$file"
