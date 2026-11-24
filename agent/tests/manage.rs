@@ -252,7 +252,7 @@ fn a_dry_run_counts_the_prompts_per_tool_and_sends_nothing() {
     assert_eq!(reply["dry_run"], true);
     assert_eq!(
         reply["prompts"],
-        json!({ "chat": 0, "claude-code": 4, "codex": 3 })
+        json!({ "chat": 0, "chatgpt": 0, "claude-code": 4, "codex": 3 })
     );
     assert_eq!(reply["total"], 7);
     let limited: Value =
@@ -292,7 +292,7 @@ fn a_backfill_counts_and_sends_the_chat_prompts_and_follows_the_master_switch() 
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
     assert_eq!(
         reply["prompts"],
-        json!({ "chat": 2, "claude-code": 1, "codex": 1 })
+        json!({ "chat": 2, "chatgpt": 0, "claude-code": 1, "codex": 1 })
     );
     assert_eq!(reply["total"], 4);
 
@@ -301,7 +301,7 @@ fn a_backfill_counts_and_sends_the_chat_prompts_and_follows_the_master_switch() 
     let reply: Value = serde_json::from_str(&manage.backfill(r#"{"dry_run":true}"#)).unwrap();
     assert_eq!(
         reply["prompts"],
-        json!({ "chat": 2, "claude-code": 0, "codex": 0 })
+        json!({ "chat": 2, "chatgpt": 0, "claude-code": 0, "codex": 0 })
     );
     // With collection off nothing is counted.
     set_collection(&stand, r#"{"enabled":false}"#);

@@ -43,6 +43,25 @@ pub fn plain_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Str
     })
 }
 
+/// A list of strings, read as no value when it is anything else, with any item that is not a
+/// string left out.
+pub fn plain_strings<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Ok(match serde::Deserialize::deserialize(d)? {
+        serde_json::Value::Array(items) => Some(
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    serde_json::Value::String(s) => Some(s),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => None,
+    })
+}
+
 /// Whether every character of a word is one that a plain program name, path or setting value
 /// is made of. The command is split on spaces without understanding shell syntax, so a word
 /// with any other character (quotes, `$`, `;`, `|`, `>`, ...) may be only a piece of an

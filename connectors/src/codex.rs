@@ -1,13 +1,50 @@
+use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use serde::Deserialize;
 
-use crate::text::{add_tool_name, argv_command, join_texts, plain_string, root_under};
-use crate::{Author, FileState, Listing, Mark, Parsed, Record, Role, Tool, Turn};
+use crate::text::{
+    add_tool_name, argv_command, join_texts, plain_string, plain_strings, root_under,
+};
+use crate::{
+    Author, FileState, Line as FileLine, Listing, Mark, Parsed, Record, Role, Tool, Turn,
+    for_each_line,
+};
+
+/// The app that writes a session as a chat when it has the ChatGPT app's own workspace.
+const DESKTOP_ORIGINATOR: &str = "Codex Desktop";
+
+/// Which of the session files in the Codex sessions directory a reader takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sessions {
+    /// Every session but the chats of the ChatGPT app.
+    Codex,
+    /// The chats of the ChatGPT app. Their folder is one the app made for the chat, not a
+    /// project, so no record carries it.
+    ChatGpt,
+}
+
+impl Sessions {
+    /// The name of the tool these sessions are stored under.
+    pub(crate) fn tool(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::ChatGpt => "chatgpt",
+        }
+    }
+}
+
+/// Which sessions each file belongs to, by path, with the length the file had when it was
+/// read. The first line of a session file never changes once it is written, so each file is
+/// read for it once; a file that is shorter than it was is a new file at the same path, as the
+/// follower takes it, and is read again. A file no listing finds any more is forgotten.
+pub(crate) static BELONGS: LazyLock<Mutex<HashMap<PathBuf, (Sessions, u64)>>> =
+    LazyLock::new(Mutex::default);
 
 /// The tool's own context that Codex writes as user messages. A text block that starts
 /// with one of these is not something the user typed.
@@ -31,12 +68,89 @@ const CONTEXT_MARKERS: [&str; 11] = [
 /// The folder and branch are written once, at the start of a file; the session id is also
 /// in the file name. All three are kept in the [`FileState`], so a read that starts in the
 /// middle of a file knows them.
+///
+/// The chats of the ChatGPT app are in the same place and are left to
+/// [`ChatGpt`](crate::ChatGpt).
 pub struct Codex;
 
 impl Codex {
     fn root_in(home: &Path, codex_home: Option<OsString>) -> PathBuf {
         root_under(home, codex_home, ".codex", "sessions")
     }
+}
+
+/// The sessions directory of Codex for `home`, also the one of the ChatGPT app.
+pub(crate) fn sessions_root(home: &Path) -> PathBuf {
+    Codex::root_in(home, env::var_os("CODEX_HOME"))
+}
+
+/// The files of `sessions` under `root`.
+pub(crate) fn find_sessions(root: &Path, sessions: Sessions) -> io::Result<Listing> {
+    let mut listing = Listing::default();
+    collect_files(root, 0, &mut listing)?;
+    BELONGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|path, _| !path.starts_with(root) || listing.files.contains(path));
+    listing
+        .files
+        .retain(|path| sessions_of(path) == Some(sessions));
+    listing.files.sort();
+    Ok(listing)
+}
+
+/// The sessions a file belongs to. A file whose first line is not complete yet belongs to
+/// none for now, so no reader takes it before it is known whose it is. A file that cannot be
+/// read is left to Codex, whose read reports it.
+fn sessions_of(path: &Path) -> Option<Sessions> {
+    let Ok(len) = fs::metadata(path).map(|meta| meta.len()) else {
+        return Some(Sessions::Codex);
+    };
+    let known = BELONGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(path)
+        .copied();
+    if let Some((sessions, read_at)) = known
+        && read_at <= len
+    {
+        return Some(sessions);
+    }
+    let mut first = None;
+    let read = for_each_line(path, 0, |line, _| {
+        first = Some(line);
+        false
+    });
+    if read.is_err() {
+        return Some(Sessions::Codex);
+    }
+    let sessions = if is_chat_line(&first?) {
+        Sessions::ChatGpt
+    } else {
+        Sessions::Codex
+    };
+    BELONGS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(path.to_owned(), (sessions, len));
+    Some(sessions)
+}
+
+/// Whether the first line of a session file names a chat of the ChatGPT app.
+fn is_chat_line(line: &FileLine) -> bool {
+    let FileLine::Text(text) = line else {
+        return false;
+    };
+    serde_json::from_str::<Line>(text)
+        .ok()
+        .filter(|line| line.kind == "session_meta")
+        .and_then(|line| line.payload)
+        .is_some_and(|meta| meta.is_chat())
+}
+
+/// The ChatGPT app's own workspace, where it makes a folder for each chat without a project.
+fn is_chat_workspace(path: &Path) -> bool {
+    path.ends_with(Path::new("Documents").join("Codex"))
 }
 
 /// The text blocks of a message of `role`, one after the other, without the tool's own
@@ -151,104 +265,119 @@ fn collect_files(dir: &Path, depth: u8, listing: &mut Listing) -> io::Result<()>
 
 impl Tool for Codex {
     fn name(&self) -> &'static str {
-        "codex"
+        Sessions::Codex.tool()
     }
 
     fn root(&self, home: &Path) -> PathBuf {
-        Self::root_in(home, env::var_os("CODEX_HOME"))
+        sessions_root(home)
     }
 
     fn find_files(&self, root: &Path) -> io::Result<Listing> {
-        let mut listing = Listing::default();
-        collect_files(root, 0, &mut listing)?;
-        listing.files.sort();
-        Ok(listing)
+        find_sessions(root, Sessions::Codex)
     }
 
     fn open_file(&self, path: &Path) -> FileState {
-        FileState {
-            session: session_of(path).unwrap_or_default(),
-            ..FileState::default()
-        }
+        open_session(path)
     }
 
     fn parse_line(&self, state: &mut FileState, line: &str) -> Parsed {
-        let Ok(line) = serde_json::from_str::<Line>(line) else {
-            return Parsed::Skipped;
-        };
-        let payload = line.payload.unwrap_or_default();
-        match line.kind.as_str() {
-            "session_meta" => {
-                if state.session.is_empty() {
-                    state.session = payload.id.unwrap_or_default();
-                }
-                if let Some(cwd) = payload.cwd.filter(|c| !c.is_empty()) {
-                    state.folder = cwd;
-                }
-                if let Some(branch) = payload.git.and_then(|g| g.branch) {
-                    state.branch = branch;
-                }
-                let source = payload.source;
-                state.author = if source.as_deref() == Some("exec")
-                    || payload.originator.as_deref() == Some("codex_exec")
-                {
-                    Author::Unattended
-                } else if source.is_some() {
-                    Author::Person
-                } else {
-                    Author::Unknown
-                };
-                return Parsed::Ignored;
+        parse_session_line(Sessions::Codex, state, line)
+    }
+}
+
+/// The state of a session file that was never read: the session id of its name.
+pub(crate) fn open_session(path: &Path) -> FileState {
+    FileState {
+        session: session_of(path).unwrap_or_default(),
+        ..FileState::default()
+    }
+}
+
+/// Reads one line of a Codex session file into a record of `sessions`.
+pub(crate) fn parse_session_line(sessions: Sessions, state: &mut FileState, line: &str) -> Parsed {
+    // A file read before as Codex is resumed with the folder Codex saved in its state.
+    if sessions == Sessions::ChatGpt {
+        state.folder.clear();
+    }
+    let Ok(line) = serde_json::from_str::<Line>(line) else {
+        return Parsed::Skipped;
+    };
+    let payload = line.payload.unwrap_or_default();
+    match line.kind.as_str() {
+        "session_meta" => {
+            if state.session.is_empty() {
+                state.session = payload.id.unwrap_or_default();
             }
-            "turn_context" => {
-                if let Some(cwd) = payload.cwd.filter(|c| !c.is_empty()) {
-                    state.folder = cwd;
-                }
-                return Parsed::Ignored;
+            if sessions == Sessions::Codex
+                && let Some(cwd) = payload.cwd.filter(|c| !c.is_empty())
+            {
+                state.folder = cwd;
             }
-            "response_item" | "event_msg" => {}
-            _ => return Parsed::Ignored,
-        }
-        let Some(time) = line.timestamp else {
+            if let Some(branch) = payload.git.and_then(|g| g.branch) {
+                state.branch = branch;
+            }
+            let source = payload.source;
+            state.author = if source.as_deref() == Some("exec")
+                || payload.originator.as_deref() == Some("codex_exec")
+            {
+                Author::Unattended
+            } else if source.is_some() {
+                Author::Person
+            } else {
+                Author::Unknown
+            };
             return Parsed::Ignored;
-        };
-        let role = match (
-            line.kind.as_str(),
-            payload.kind.as_deref(),
-            payload.role.as_deref(),
-        ) {
-            ("response_item", Some("message"), Some("user")) => Some(Role::User),
-            ("response_item", Some("message"), Some("assistant")) => Some(Role::Assistant),
-            ("response_item", Some("message"), Some("developer")) => return Parsed::Ignored,
-            _ => None,
-        };
-        let tools = tool_names(&line.kind, &payload);
-        let text = role.and_then(|r| join_text(r, &payload.content.unwrap_or_default()));
-        match (role, text) {
-            (Some(role), Some(text)) => Parsed::Record(Record::Turn(Turn {
-                tool: self.name().into(),
-                session: state.session.clone(),
-                time,
-                folder: state.folder.clone(),
-                branch: state.branch.clone(),
-                role,
-                author: if role == Role::User {
-                    state.author
-                } else {
-                    Author::Unknown
-                },
-                text,
-                tools,
-            })),
-            _ => Parsed::Record(Record::Mark(Mark {
-                tool: self.name().into(),
-                session: state.session.clone(),
-                time,
-                folder: state.folder.clone(),
-                branch: state.branch.clone(),
-                tools,
-            })),
         }
+        "turn_context" => {
+            if sessions == Sessions::Codex
+                && let Some(cwd) = payload.cwd.filter(|c| !c.is_empty())
+            {
+                state.folder = cwd;
+            }
+            return Parsed::Ignored;
+        }
+        "response_item" | "event_msg" => {}
+        _ => return Parsed::Ignored,
+    }
+    let Some(time) = line.timestamp else {
+        return Parsed::Ignored;
+    };
+    let role = match (
+        line.kind.as_str(),
+        payload.kind.as_deref(),
+        payload.role.as_deref(),
+    ) {
+        ("response_item", Some("message"), Some("user")) => Some(Role::User),
+        ("response_item", Some("message"), Some("assistant")) => Some(Role::Assistant),
+        ("response_item", Some("message"), Some("developer")) => return Parsed::Ignored,
+        _ => None,
+    };
+    let tools = tool_names(&line.kind, &payload);
+    let text = role.and_then(|r| join_text(r, &payload.content.unwrap_or_default()));
+    match (role, text) {
+        (Some(role), Some(text)) => Parsed::Record(Record::Turn(Turn {
+            tool: sessions.tool().into(),
+            session: state.session.clone(),
+            time,
+            folder: state.folder.clone(),
+            branch: state.branch.clone(),
+            role,
+            author: if role == Role::User {
+                state.author
+            } else {
+                Author::Unknown
+            },
+            text,
+            tools,
+        })),
+        _ => Parsed::Record(Record::Mark(Mark {
+            tool: sessions.tool().into(),
+            session: state.session.clone(),
+            time,
+            folder: state.folder.clone(),
+            branch: state.branch.clone(),
+            tools,
+        })),
     }
 }
 
@@ -283,6 +412,34 @@ struct Payload {
     name: Option<String>,
     #[serde(default, deserialize_with = "plain_string")]
     arguments: Option<String>,
+    /// `session_meta` only: the folders the session may work in.
+    #[serde(default, deserialize_with = "plain_strings")]
+    runtime_workspace_roots: Option<Vec<String>>,
+}
+
+impl Payload {
+    /// A `session_meta` of a chat of the ChatGPT app: started by the desktop app in a folder
+    /// it made inside its own workspace, with only that workspace to work in. A session with a
+    /// project chosen in the app, the workspace itself included, stays Codex. Without the list
+    /// of workspaces, the folder of the session decides.
+    fn is_chat(&self) -> bool {
+        if self.originator.as_deref() != Some(DESKTOP_ORIGINATOR) {
+            return false;
+        }
+        let Some(cwd) = self.cwd.as_deref().map(Path::new) else {
+            return false;
+        };
+        let inside = |workspace: &Path| {
+            is_chat_workspace(workspace)
+                && cwd
+                    .strip_prefix(workspace)
+                    .is_ok_and(|rest| rest.components().next().is_some())
+        };
+        match self.runtime_workspace_roots.as_deref() {
+            Some(roots) if !roots.is_empty() => roots.iter().all(|root| inside(Path::new(root))),
+            _ => cwd.ancestors().skip(1).any(is_chat_workspace),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -298,7 +455,7 @@ struct Block {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const ID: &str = "01a0bee2-6260-73a3-b389-43c86bb8930f";
@@ -310,11 +467,11 @@ mod tests {
         ))
     }
 
-    fn item(kind: &str, payload: &str) -> String {
+    pub(crate) fn item(kind: &str, payload: &str) -> String {
         format!(r#"{{"timestamp":"{T}","type":"{kind}","payload":{payload}}}"#)
     }
 
-    fn message(role: &str, block: &str, text: &str) -> String {
+    pub(crate) fn message(role: &str, block: &str, text: &str) -> String {
         item(
             "response_item",
             &format!(
@@ -339,7 +496,7 @@ mod tests {
         st
     }
 
-    fn turn(p: Parsed) -> Turn {
+    pub(crate) fn turn(p: Parsed) -> Turn {
         match p {
             Parsed::Record(Record::Turn(t)) => t,
             other => panic!("not a turn: {other:?}"),
@@ -580,10 +737,10 @@ mod tests {
         fs::create_dir_all(&day).unwrap();
         fs::write(
             day.join(format!("rollout-2026-11-11T10-15-00-{ID}.jsonl")),
-            "",
+            meta("") + "\n",
         )
         .unwrap();
-        fs::write(day.join("other.jsonl"), "").unwrap();
+        fs::write(day.join("other.jsonl"), meta("") + "\n").unwrap();
         let files = Codex.find_files(&dir.join("sessions")).unwrap().files;
         assert_eq!(files.len(), 1);
         assert!(
@@ -611,7 +768,7 @@ mod tests {
         fs::create_dir_all(&bad).unwrap();
         fs::create_dir_all(&good).unwrap();
         let log = good.join(format!("rollout-2026-11-11T10-15-00-{ID}.jsonl"));
-        fs::write(&log, "").unwrap();
+        fs::write(&log, meta("") + "\n").unwrap();
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
         let locked = fs::read_dir(&bad).is_err();
         let listing = Codex.find_files(&root).unwrap();

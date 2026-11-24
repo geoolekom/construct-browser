@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Author, ClaudeCode, Codex, Parsed};
+use crate::{Author, ChatGpt, ClaudeCode, Codex, Parsed};
 
 /// What a reader remembers about one file between lines. It can be saved and restored,
 /// so reading continues after a restart in the middle of a file.
@@ -81,7 +81,7 @@ impl Registry {
 /// The tools of this crate. A new tool is one module and one line here.
 #[must_use]
 pub fn tools() -> Vec<Box<dyn Tool>> {
-    vec![Box::new(ClaudeCode), Box::new(Codex)]
+    vec![Box::new(ClaudeCode), Box::new(Codex), Box::new(ChatGpt)]
 }
 
 #[cfg(test)]
@@ -145,5 +145,6 @@ mod tests {
         assert!(Registry::builtin().get("dummy").is_none());
         assert!(Registry::builtin().get("claude-code").is_some());
         assert!(Registry::builtin().get("codex").is_some());
+        assert!(Registry::builtin().get("chatgpt").is_some());
     }
 }

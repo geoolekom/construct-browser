@@ -27,8 +27,8 @@ pub const FILE_NAME: &str = "settings.json";
 /// Format version written into the file.
 pub const VERSION: u32 = 1;
 
-/// The tools that have a switch of their own, by the name their sessions carry in the store.
-pub const TOOLS: [&str; 2] = ["claude-code", "codex"];
+/// The tools whose sessions are read, by the name their sessions carry in the store.
+pub const TOOLS: [&str; 3] = ["claude-code", "codex", "chatgpt"];
 
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +349,8 @@ impl Settings {
         c.enabled
             && match tool {
                 "claude-code" => c.claude_code,
-                "codex" => c.codex,
+                // The Codex switch also answers for the ChatGPT app's chats.
+                "codex" | "chatgpt" => c.codex,
                 crate::screen::SOURCE => c.screen,
                 crate::chat::SOURCE => true,
                 _ => false,
@@ -467,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_is_collected_only_while_collection_and_its_own_switch_are_on() {
+    fn a_tool_is_collected_only_while_collection_and_its_switch_are_on() {
         let dir = scratch("collects");
         let s = Settings::open(&dir).unwrap();
         assert!(s.collects("claude-code") && s.collects("codex"));
@@ -482,14 +483,17 @@ mod tests {
             r#"{"collection":{"claude_code":true,"codex":true}}"#,
         ))
         .unwrap();
+        assert!(s.collects("chatgpt"));
         s.apply(update(r#"{"collection":{"codex":false}}"#))
             .unwrap();
         assert!(s.collects("claude-code") && !s.collects("codex"));
-        assert_eq!(s.tools_off(), ["codex"]);
+        // The ChatGPT app's chats follow the Codex switch.
+        assert!(!s.collects("chatgpt"));
+        assert_eq!(s.tools_off(), ["codex", "chatgpt"]);
         s.apply(update(r#"{"collection":{"enabled":false,"codex":true}}"#))
             .unwrap();
-        assert!(!s.collects("claude-code") && !s.collects("codex"));
-        assert_eq!(s.tools_off(), ["claude-code", "codex"]);
+        assert!(!s.collects("claude-code") && !s.collects("codex") && !s.collects("chatgpt"));
+        assert_eq!(s.tools_off(), ["claude-code", "codex", "chatgpt"]);
         let _ = fs::remove_dir_all(dir);
     }
 

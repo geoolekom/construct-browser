@@ -161,7 +161,7 @@ async fn the_socket_answers_the_details_of_a_dashboard_from_the_store() {
         .unwrap();
     assert_eq!(
         call(&stand.socket, "dashboard-state".to_owned()).await,
-        json!({ "state": "ready", "tools_off": ["codex"] })
+        json!({ "state": "ready", "tools_off": ["codex", "chatgpt"] })
     );
 
     let page = call(&stand.socket, sessions).await;
@@ -206,7 +206,7 @@ async fn the_state_is_empty_when_there_are_no_records() {
         .unwrap();
     assert_eq!(
         call(&stand.socket, "dashboard-state".to_owned()).await,
-        json!({ "state": "empty", "tools_off": ["claude-code", "codex"] })
+        json!({ "state": "empty", "tools_off": ["claude-code", "codex", "chatgpt"] })
     );
     task.abort();
     let _ = task.await;

@@ -391,10 +391,15 @@ test('a turn stored a few seconds ago shows collecting for the tool in the sideb
     connectors: {
       'claude-code': { turns: 12, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
       codex: { turns: 0, skipped: 0, scanning: false },
+      chatgpt: { turns: 3, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
     },
   });
   await withStandIn(session, reply, async (page) => {
     await page.getByRole('button', { name: 'Status', exact: true }).click();
+    await expect(page.locator('#sidebar-connector-chatgpt')).toContainText('ChatGPT');
+    await expect(
+      page.locator('#connector-chatgpt').getByRole('heading', { name: 'ChatGPT' }),
+    ).toBeVisible();
     await expect(page.locator('#sidebar-connector-claude-code')).toHaveAttribute(
       'data-state',
       'collecting',

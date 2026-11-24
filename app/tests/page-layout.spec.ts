@@ -299,11 +299,12 @@ for (const state of dashboardStates) {
   });
 }
 
-// The Status page has 8 blocks here: a platform with a screen to collect adds a card.
+// The Status page has 9 blocks here, one card for each source the agent reads (Claude Code,
+// Codex, ChatGPT): a platform with a screen to collect adds a card.
 test('the Status page keeps its blocks apart with a running agent', async ({ page }) => {
   await openPage(page, 'Status');
   await expect(page.locator('#agent-status')).toHaveText('running');
-  await expectBlocksApart(page, 8, normalGap, 'Status running');
+  await expectBlocksApart(page, 9, normalGap, 'Status running');
 });
 
 test('the Settings page keeps its blocks wide apart with a running agent', async ({ page }) => {

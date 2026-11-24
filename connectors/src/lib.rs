@@ -4,6 +4,7 @@
 //! file into a [`Record`]. The crate's I/O is listing those files and reading their lines
 //! ([`for_each_line`]); it depends on neither the agent nor an async runtime.
 
+mod chatgpt;
 mod claude_code;
 mod codex;
 mod lines;
@@ -12,6 +13,7 @@ mod record;
 mod text;
 mod tool;
 
+pub use chatgpt::ChatGpt;
 pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use lines::{Line, MAX_LINE_BYTES, for_each_line};
