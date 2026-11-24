@@ -24,13 +24,15 @@ Open a terminal in the download directory and install the package.
 sudo apt install ./construct-browser_*.deb
 ```
 
-For Apple Silicon Macs, download the `macos-arm64-dmg` artifact from a successful **Desktop release**
-workflow run in [GitHub Actions](https://github.com/constructorfabric/construct/actions/workflows/release.yml).
-Extract the ZIP and follow the [macOS installation steps](#macos-apple-silicon).
+For Apple Silicon Macs, get the `macos-arm64-dmg` artifact from the
+[Desktop release workflow](https://github.com/constructorfabric/construct/actions/workflows/release.yml).
+Choose a successful run for a release tag or a reviewed commit on `main`. Check the run's ref and commit
+before downloading, then extract the ZIP and follow the [macOS installation steps](#macos-apple-silicon).
 
-For Windows x64, download `construct-browser-x64-Setup.exe` from GitHub Releases and run it.
-SmartScreen may warn that the installer is unsigned. The app opens, and its Status page explains
-that the Construct agent is not supported on Windows yet.
+For Windows x64, download the `windows-x64-setup` artifact from a successful Desktop release workflow run
+for a release tag or a reviewed commit on `main`. Extract and run `construct-browser-x64-Setup.exe`.
+SmartScreen may warn about the unsigned installer. The app opens, and its Status page explains that
+the Construct agent is unavailable on Windows.
 
 ## What it does today
 
@@ -204,8 +206,9 @@ and ships without notarization.
 
 1. Open the disk image and drag **Construct Browser** into **Applications**. For an update, quit the
    running app first and choose **Replace** when prompted.
-1. Open the app from **Applications**. If Gatekeeper blocks a build you trust, go to **System Settings >
-   Privacy & Security**, then click **Open Anyway**. You can also clear quarantine for that copy with
+1. Open the app from **Applications**. Use the Gatekeeper exception only for a disk image built from a
+   reviewed commit or release tag. Go to **System Settings > Privacy & Security** and click
+   **Open Anyway**. You can also clear quarantine for that copy with
    `xattr -dr com.apple.quarantine "/Applications/Construct Browser.app"`.
 1. On first launch, the app registers the agent in `~/Library/LaunchAgents/cf.construct.agent.plist`.
    The Status page shows `running` once the agent starts.

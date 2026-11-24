@@ -49,16 +49,54 @@ jobs:
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
+  build-linux:
+    needs: version
+    name: Build (linux-x64)
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fakeroot protobuf-compiler libprotobuf-dev
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '25.8'
+          repo-token: ${{ github.token }}
+      - &rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - &build-agent
+        name: Build the release agent
+        run: cargo build --release --locked -p construct-agent --bin construct-agent
+      - &setup-node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install app dependencies
+        run: make app-deps
+      - &package-app
+        name: Package the app
+        working-directory: app
+        run: npm run make
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x64-deb
+          path: app/out/make/deb/x64/*.deb
+          if-no-files-found: error
+
   build:
     needs: version
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x64
-            runner: ubuntu-22.04
-            artifact: linux-x64-deb
-            path: app/out/make/deb/x64/*.deb
           - platform: macos-arm64
             runner: macos-15
             target: aarch64-apple-darwin
@@ -76,19 +114,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fakeroot protobuf-compiler libprotobuf-dev
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        if: runner.os == 'Linux'
-        with:
-          version: '25.8'
-          repo-token: ${{ github.token }}
+      - *checkout
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         env:
@@ -98,16 +124,11 @@ jobs:
           brew install protobuf
           # Seed the bundled PostgreSQL cache without querying GitHub's releases API.
           scripts/build-pgvector.sh --download-postgresql "$HOME/.theseus/postgresql" "$RUST_TARGET"
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build the release agent
-        run: cargo build --release --locked -p construct-agent --bin construct-agent
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: app/package-lock.json
+      - *rust-cache
+      - *build-agent
+      - *setup-node
       - name: Install app dependencies
-        if: runner.os != 'Windows'
+        if: runner.os == 'macOS'
         run: make app-deps
       - name: Install Windows app dependencies
         if: runner.os == 'Windows'
@@ -115,9 +136,7 @@ jobs:
         run: |
           npm ci
           node node_modules/electron/install.js
-      - name: Package the app
-        working-directory: app
-        run: npm run make
+      - *package-app
       - name: Test the Windows agent path
         if: runner.os == 'Windows'
         working-directory: app
@@ -141,7 +160,7 @@ jobs:
           signature=$(codesign -dv --verbose=4 "$app" 2>&1)
           printf '%s\n' "$signature"
           if ! grep -Fxq 'Signature=adhoc' <<< "$signature" ||
-             grep -Fq '(runtime)' <<< "$signature"; then
+             grep -Eq '^CodeDirectory .* flags=0x[[:xdigit:]]+\(([^,()]+,)*runtime[,)]' <<< "$signature"; then
             echo '::error::Expected an ad hoc signature without the hardened runtime'
             exit 1
           fi
@@ -152,7 +171,7 @@ jobs:
           if-no-files-found: error
 
   smoke:
-    needs: build
+    needs: build-linux
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -174,7 +193,7 @@ jobs:
       github.repository == 'constructorfabric/construct' &&
       (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref_type == 'tag'))
-    needs: [version, build, smoke]
+    needs: [version, build-linux, smoke]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -189,26 +208,21 @@ jobs:
           path: dist
           pattern: '*-deb'
           merge-multiple: true
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: windows-x64-setup
-          path: dist
-      - name: Publish the packages and checksums
+      - name: Publish the package and checksums
         shell: bash
         working-directory: dist
         run: |
           set -euo pipefail
-          packages=(*.deb *.exe)
-          sha256sum -- "${packages[@]}" > SHA256SUMS
+          sha256sum -- *.deb > SHA256SUMS
           if release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets); then
             draft=$(jq -r '.isDraft' <<< "$release")
             if [[ "$draft" == true ]]; then
-              echo "::error::Release $TAG is a draft. Add any missing packages and SHA256SUMS. Verify the packages against SHA256SUMS before publishing."
+              echo "::error::Release $TAG is a draft. Add any missing .deb and SHA256SUMS assets. Verify the package against SHA256SUMS before publishing."
               exit 1
             fi
             existing=$(jq -r '.assets[].name' <<< "$release")
             # Keep checksums immutable for consumers that pin them.
-            for file in "${packages[@]}"; do
+            for file in *.deb; do
               if ! grep -Fxq -- "$file" <<< "$existing"; then
                 gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$file"
                 echo "::warning::$TAG lacked $file; the existing SHA256SUMS was left as published"
@@ -223,4 +237,4 @@ jobs:
           else
             flags+=(--latest --verify-tag --generate-notes)
           fi
-          gh release create "$TAG" "${flags[@]}" "${packages[@]}" SHA256SUMS
+          gh release create "$TAG" "${flags[@]}" *.deb SHA256SUMS
