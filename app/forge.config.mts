@@ -1,7 +1,7 @@
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { MakerDeb } from '@electron-forge/maker-deb';
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
-import { MakerZIP } from '@electron-forge/maker-zip';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import type { ForgeConfig } from '@electron-forge/shared-types';
@@ -11,6 +11,11 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     appBundleId: 'cf.construct.browser',
+    osxSign: {
+      identity: '-',
+      identityValidation: false,
+      optionsForFile: () => ({ hardenedRuntime: false }),
+    },
     // The name of the program in the package: /usr/bin/construct-browser, not the product name with a space.
     executableName: 'construct-browser',
     // Only macOS reads these keys; the other systems ignore them.
@@ -22,7 +27,7 @@ const config: ForgeConfig = {
   rebuildConfig: {},
   makers: [
     new MakerSquirrel({}),
-    new MakerZIP({}, ['darwin']),
+    new MakerDMG({}),
     new MakerDeb({ options: { name: 'construct-browser', bin: 'construct-browser' } }),
   ],
   plugins: [

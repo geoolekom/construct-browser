@@ -57,6 +57,13 @@ jobs:
         include:
           - platform: linux-x64
             runner: ubuntu-22.04
+            artifact: linux-x64-deb
+            path: app/out/make/deb/x64/*.deb
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-arm64-dmg
+            path: app/out/make/dmg/arm64/*.dmg
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
     env:
@@ -65,14 +72,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install build dependencies
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends fakeroot protobuf-compiler libprotobuf-dev
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        if: runner.os == 'Linux'
         with:
           version: '25.8'
           repo-token: ${{ github.token }}
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          test "$(rustc --print host-tuple)" = "$RUST_TARGET"
+          brew install protobuf
+          # Seed the bundled PostgreSQL cache without querying GitHub's releases API.
+          scripts/build-pgvector.sh --download-postgresql "$HOME/.theseus/postgresql" "$RUST_TARGET"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the release agent
         run: cargo build --release --locked -p construct-agent --bin construct-agent
@@ -86,10 +104,24 @@ jobs:
       - name: Package the app
         working-directory: app
         run: npm run make
+      - name: Verify the macOS app signature
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app='app/out/Construct Browser-darwin-arm64/Construct Browser.app'
+          codesign --verify --deep --strict "$app"
+          signature=$(codesign -dv --verbose=4 "$app" 2>&1)
+          printf '%s\n' "$signature"
+          if ! grep -Fxq 'Signature=adhoc' <<< "$signature" ||
+             grep -Fq '(runtime)' <<< "$signature"; then
+            echo '::error::Expected an ad hoc signature without the hardened runtime'
+            exit 1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.platform }}-deb
-          path: app/out/make/deb/x64/*.deb
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
           if-no-files-found: error
 
   smoke:

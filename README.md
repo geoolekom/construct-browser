@@ -24,6 +24,10 @@ Open a terminal in the download directory and install the package.
 sudo apt install ./construct-browser_*.deb
 ```
 
+For Apple Silicon Macs, download the `macos-arm64-dmg` artifact from a successful **Desktop release**
+workflow run in [GitHub Actions](https://github.com/constructorfabric/construct/actions/workflows/release.yml).
+Extract the ZIP and follow the [macOS installation steps](#macos-apple-silicon).
+
 ## What it does today
 
 - **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
@@ -184,70 +188,33 @@ registers the agent to start at login. `make smoke` builds the package and insta
 
 ### macOS (Apple Silicon)
 
-The build makes an app bundle, and you turn it into a disk image and sign it yourself. The signature is
-ad-hoc: it is not tied to a developer account, so it only has to be good enough for your own Mac.
+To build the disk image locally, run the following commands.
 
 ```bash
-make package
-APP="app/out/Construct Browser-darwin-arm64/Construct Browser.app"
-# Sign the agent first, with the name macOS lists it under and a requirement that holds for every
-# build of it, then the app. Do not add `--options runtime` to an ad-hoc signature: the app does
-# not start with it.
-codesign --force --identifier cf.construct.agent -r='designated => identifier "cf.construct.agent"' \
-  --sign - "$APP/Contents/Resources/construct-agent"
-codesign --force --deep --sign - "$APP"
-
-# A disk image with the app and a shortcut to the Applications folder.
-mkdir -p app/out/dmg && cp -R "$APP" app/out/dmg/ && ln -sf /Applications app/out/dmg/Applications
-hdiutil create -volname "Construct Browser" -srcfolder app/out/dmg -ov -format UDZO "app/out/Construct Browser.dmg"
+make build app-deps
+(cd app && npm run make)
 ```
 
-Open `app/out/Construct Browser.dmg` and drag **Construct Browser** onto **Applications**.
+Electron Forge writes the disk image to `app/out/make/dmg/arm64/`. The app uses an ad hoc signature
+and ships without notarization.
+
+1. Open the disk image and drag **Construct Browser** into **Applications**. For an update, quit the
+   running app first and choose **Replace** when prompted.
+1. Open the app from **Applications**. If Gatekeeper blocks a build you trust, go to **System Settings >
+   Privacy & Security**, then click **Open Anyway**. You can also clear quarantine for that copy with
+   `xattr -dr com.apple.quarantine "/Applications/Construct Browser.app"`.
+1. On first launch, the app registers the agent in `~/Library/LaunchAgents/cf.construct.agent.plist`.
+   The Status page shows `running` once the agent starts.
+
+The Apple Silicon agent bundles pgvector. If pgvector is unavailable in a build, the database on the
+Status page shows `failed` with the reason `pgvector is not built for this platform yet`.
 
 The app declares why it sends Apple Events (`NSAppleEventsUsageDescription` in its `Info.plist`), which macOS needs
 before it asks you to let the agent read the tab of your browser.
 
-The agent never raises the system prompt for Accessibility. Add it once: open **System Settings > Privacy &
-Security > Accessibility**, click **+**, choose `/Applications/Construct Browser.app/Contents/Resources/construct-agent`
-and turn it on. An ad-hoc signature is tied to the exact build by default, so macOS would ask for the grant again
-after every rebuild. The requirement in the command above ties it to the name `cf.construct.agent` instead, and the
-grant of one build holds for the next ones (checked for Accessibility). Remove an old `construct-agent` row from the
-list once, if you have one from a build signed without the requirement. Any program signed with that name meets the
-requirement, so keep it for your own Mac. With a Developer ID certificate, sign the agent first and the app second,
-with the Hardened Runtime and the entitlements file of the app; the grant is then tied to your team:
-
-```bash
-codesign --force --options runtime --entitlements app/entitlements.plist --identifier cf.construct.agent \
-  --sign "Developer ID Application: <your name>" "$APP/Contents/Resources/construct-agent"
-codesign --force --deep --options runtime --entitlements app/entitlements.plist \
-  --sign "Developer ID Application: <your name>" "$APP"
-```
-
-This Developer ID path has not been run yet. Electron may also need `com.apple.security.cs.allow-jit` in the
-entitlements under the Hardened Runtime; add it to `app/entitlements.plist` if the signed app does not start.
-
-#### When you have a DMG
-
-Someone gives you a disk image made with the steps above (Apple Silicon only; an Intel Mac builds from source).
-The agent in it carries the requirement from the signing step, which is what keeps its Accessibility grant.
-
-Fresh install:
-
-1. Drag **Construct Browser** onto **Applications**.
-1. The app is not notarized. Remove the quarantine mark:
-   `xattr -dr com.apple.quarantine "/Applications/Construct Browser.app"`
-   (or right-click the app > Open, then **System Settings > Privacy & Security > Open Anyway**).
-1. Open the app. Its first start registers the background agent.
-1. Add the agent to Accessibility once, as described above.
-
-Reinstall or update:
-
-1. Quit the app. Drag the new **Construct Browser** onto **Applications** and choose **Replace**.
-1. Remove the quarantine mark again (step 2 above): every downloaded disk image has it.
-1. Open the app. The new agent replaces the old one within a few seconds.
-1. Do nothing in **Privacy & Security** when the old and the new disk image were both signed with the requirement:
-   the grant holds. If the old build was signed without it, remove its `construct-agent` row from the Accessibility
-   list and add the agent again, once.
+To grant Accessibility access, open **System Settings > Privacy & Security > Accessibility**, click **+**,
+choose `/Applications/Construct Browser.app/Contents/Resources/construct-agent` and turn it on.
+If macOS stops recognizing that grant after an update, remove the old entry and add the new agent.
 
 ### Windows
 

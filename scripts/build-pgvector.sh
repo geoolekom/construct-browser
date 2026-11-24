@@ -6,10 +6,17 @@
 # aarch64-apple-darwin (needs curl, tar, shasum and the Xcode command line tools for make and clang).
 #
 # usage: scripts/build-pgvector.sh <out-dir> [<target>]
+#        scripts/build-pgvector.sh --download-postgresql <out-dir> [<target>]
 # The target defaults to the machine the script runs on.
 # The pins are in this script (pgvector release and checksums) and in .cargo/config.toml
 # (PostgreSQL release); a new PostgreSQL release needs its checksum added here.
 set -euo pipefail
+
+download_only=false
+if [ "${1:-}" = --download-postgresql ]; then
+  download_only=true
+  shift
+fi
 
 # The PostgreSQL release is the one pinned in .cargo/config.toml (POSTGRESQL_VERSION), which is
 # also the one the agent embeds. Cargo passes it in; a manual run reads it from that file.
@@ -50,9 +57,6 @@ PGVECTOR_URL="https://github.com/pgvector/pgvector/archive/refs/tags/v${PGVECTOR
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-work="$out/work"
-rm -rf "$work"
-mkdir -p "$work"
 
 # GNU sha256sum on Linux; macOS has shasum (its own sha256sum, if any, takes other options).
 if sha256sum --version >/dev/null 2>&1; then
@@ -66,14 +70,30 @@ fetch() { # url sha256 file
   if [ -f "$out/$3" ] && [ "$(sha256 "$out/$3")" = "$2" ]; then
     return
   fi
-  curl -fsSL --retry 3 -o "$out/$3" "$1"
+  local download
+  download=$(mktemp "$out/$3.XXXXXX")
   local got
-  got=$(sha256 "$out/$3")
+  if ! curl -fsSL --retry 3 -o "$download" "$1"; then
+    rm -f "$download"
+    return 1
+  fi
+  got=$(sha256 "$download")
   if [ "$got" != "$2" ]; then
     echo "$3: sha256 is $got, expected $2" >&2
-    exit 1
+    rm -f "$download"
+    return 1
   fi
+  mv -f "$download" "$out/$3"
 }
+
+if [ "$download_only" = true ]; then
+  fetch "$PG_URL" "$PG_SHA256" "postgresql-${PG_VERSION}-${target}.tar.gz"
+  exit 0
+fi
+
+work="$out/work"
+rm -rf "$work"
+mkdir -p "$work"
 
 # The archive is per target, so a copy for another target is not mistaken for this one.
 fetch "$PG_URL" "$PG_SHA256" "postgresql-${target}.tar.gz"
