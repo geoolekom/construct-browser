@@ -1,5 +1,22 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isTransientAppPath, registrationDecision } from '../src/agent-service';
+import { agentBinaryPath, isTransientAppPath, registrationDecision } from '../src/agent-service';
+
+describe('agentBinaryPath', () => {
+  it.each([
+    ['packaged', true, ['resources']],
+    ['development', false, ['target', 'release']],
+  ] as const)('uses the host executable name in a %s app', (_mode, packaged, directory) => {
+    const root = path.parse(process.cwd()).root;
+    const location = {
+      packaged,
+      resourcesPath: path.join(root, 'resources'),
+      appPath: path.join(root, 'app'),
+    };
+    const expectedName = process.platform === 'win32' ? 'construct-agent.exe' : 'construct-agent';
+    expect(agentBinaryPath(location)).toBe(path.join(root, ...directory, expectedName));
+  });
+});
 
 const translocated =
   '/private/var/folders/ab/xyz/T/AppTranslocation/1F2E-uuid/d/Construct Browser.app/Contents/Resources/construct-agent';

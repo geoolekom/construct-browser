@@ -64,8 +64,15 @@ jobs:
             target: aarch64-apple-darwin
             artifact: macos-arm64-dmg
             path: app/out/make/dmg/arm64/*.dmg
+          - platform: windows-x64
+            runner: windows-2022
+            artifact: windows-x64-setup
+            path: app/out/make/squirrel.windows/x64/construct-browser-x64-Setup.exe
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_INCREMENTAL: '0'
     steps:
@@ -100,10 +107,30 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - name: Install app dependencies
+        if: runner.os != 'Windows'
         run: make app-deps
+      - name: Install Windows app dependencies
+        if: runner.os == 'Windows'
+        working-directory: app
+        run: |
+          npm ci
+          node node_modules/electron/install.js
       - name: Package the app
         working-directory: app
         run: npm run make
+      - name: Test the Windows agent path
+        if: runner.os == 'Windows'
+        working-directory: app
+        run: npm exec -- vitest run unit/agent-service.test.ts
+      - name: Verify the Windows installer
+        if: runner.os == 'Windows'
+        env:
+          INSTALLER: ${{ matrix.path }}
+        run: |
+          if [[ ! -s "$INSTALLER" ]]; then
+            echo "::error::Squirrel did not create $INSTALLER"
+            exit 1
+          fi
       - name: Verify the macOS app signature
         if: runner.os == 'macOS'
         shell: bash
@@ -162,21 +189,26 @@ jobs:
           path: dist
           pattern: '*-deb'
           merge-multiple: true
-      - name: Publish the package and checksums
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x64-setup
+          path: dist
+      - name: Publish the packages and checksums
         shell: bash
         working-directory: dist
         run: |
           set -euo pipefail
-          sha256sum -- *.deb > SHA256SUMS
+          packages=(*.deb *.exe)
+          sha256sum -- "${packages[@]}" > SHA256SUMS
           if release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets); then
             draft=$(jq -r '.isDraft' <<< "$release")
             if [[ "$draft" == true ]]; then
-              echo "::error::Release $TAG is a draft. Add any missing .deb and SHA256SUMS assets. Verify the package against SHA256SUMS before publishing."
+              echo "::error::Release $TAG is a draft. Add any missing packages and SHA256SUMS. Verify the packages against SHA256SUMS before publishing."
               exit 1
             fi
             existing=$(jq -r '.assets[].name' <<< "$release")
             # Keep checksums immutable for consumers that pin them.
-            for file in *.deb; do
+            for file in "${packages[@]}"; do
               if ! grep -Fxq -- "$file" <<< "$existing"; then
                 gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$file"
                 echo "::warning::$TAG lacked $file; the existing SHA256SUMS was left as published"
@@ -191,4 +223,4 @@ jobs:
           else
             flags+=(--latest --verify-tag --generate-notes)
           fi
-          gh release create "$TAG" "${flags[@]}" *.deb SHA256SUMS
+          gh release create "$TAG" "${flags[@]}" "${packages[@]}" SHA256SUMS

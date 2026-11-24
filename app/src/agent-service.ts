@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 
-const agentName = process.platform === 'win32' ? 'construct-agent.exe' : 'construct-agent';
+export const agentName = process.platform === 'win32' ? 'construct-agent.exe' : 'construct-agent';
 
 /** Set to `1` to register the agent from a development run too (see the README). */
 export const REGISTER_IN_DEV_VARIABLE = 'CONSTRUCT_AGENT_REGISTER';

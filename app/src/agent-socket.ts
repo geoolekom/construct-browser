@@ -9,7 +9,7 @@ const socketName = 'agent.sock';
 /** Where the agent listens: `$XDG_RUNTIME_DIR` on Linux, `$TMPDIR` on macOS. */
 export function agentSocketPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   if (platform === 'win32') {
-    throw new Error('the agent socket is not implemented on Windows yet');
+    throw new Error('the Construct agent is not supported on Windows yet');
   }
   const variable = platform === 'darwin' ? 'TMPDIR' : 'XDG_RUNTIME_DIR';
   const dir = env[variable];

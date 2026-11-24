@@ -94,10 +94,10 @@ describe('readAgentStatus', () => {
     );
   });
 
-  it('reports start at login as not supported on Windows', async () => {
+  it('explains that the agent is not supported on Windows', async () => {
     expect(await readAgentStatus({}, 'win32')).toEqual({
       state: 'unknown',
-      reason: 'the agent socket is not implemented on Windows yet',
+      reason: 'the Construct agent is not supported on Windows yet',
       startAtLogin: 'not_supported',
     });
   });

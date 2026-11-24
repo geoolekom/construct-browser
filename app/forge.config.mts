@@ -6,6 +6,7 @@ import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { macInfoPlist } from './mac-bundle.mjs';
+import { agentName } from './src/agent-service';
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -22,11 +23,14 @@ const config: ForgeConfig = {
     extendInfo: macInfoPlist,
     // The agent is its own program: it goes next to the app, outside the asar archive,
     // and the app finds it in `process.resourcesPath`.
-    extraResource: ['../target/release/construct-agent'],
+    extraResource: [`../target/release/${agentName}`],
   },
   rebuildConfig: {},
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      authors: 'Constructor Fabric Foundation',
+      setupExe: 'construct-browser-x64-Setup.exe',
+    }),
     new MakerDMG({}),
     new MakerDeb({ options: { name: 'construct-browser', bin: 'construct-browser' } }),
   ],
