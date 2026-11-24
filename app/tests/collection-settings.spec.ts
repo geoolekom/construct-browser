@@ -1,15 +1,10 @@
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { isRecord } from '../src/agent-json';
 import {
+  agentBinary,
   checkInApp,
   claudeFile,
   claudePrompt,
@@ -24,6 +19,28 @@ import type { Session } from './fixtures';
 // The agent looks at the session files every 5 seconds. A wait is for several passes, so a slow
 // runner does not turn it red; a wait that ends at once when the agent has done what it should.
 const waitMs = 60_000;
+
+/**
+ * Waits until the agent's Construct host is ready. The agent turns collection on only once it can
+ * ask the host, and refuses until then, so a switch pressed right after a start would be refused.
+ */
+async function expectHostReady(session: Session): Promise<void> {
+  await expect
+    .poll(
+      () => {
+        const status: unknown = JSON.parse(
+          execFileSync(agentBinary, ['status'], { env: session.env, encoding: 'utf8' }),
+        );
+        if (!isRecord(status)) {
+          return undefined;
+        }
+        const host = status.construct;
+        return isRecord(host) ? host.state : host;
+      },
+      { timeout: waitMs },
+    )
+    .toBe('ready');
+}
 
 const codexSessionId = '01a0bee2-6260-73a3-b389-43c86bb8930f';
 
@@ -124,7 +141,8 @@ const test = base.extend<{ codexSession: CodexSession; collectionPage: Page }>({
       },
     });
   },
-  collectionPage: async ({ page }, use) => {
+  collectionPage: async ({ page, session }, use) => {
+    await expectHostReady(session);
     await openSettings(page, 'Collection');
     await use(page);
   },
@@ -277,6 +295,7 @@ test('an agent that started with collection off says why, and the master switch 
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, 'settings.json'), '{ not json');
   await session.startAgent();
+  await expectHostReady(session);
 
   await checkInApp(session, async (page) => {
     await openSettings(page, 'Collection');
