@@ -1,4 +1,5 @@
-//! Follows the session files of the coding tools and writes what they say to a [`Sink`].
+//! Follows the session files of the coding tools, and the stores of the apps kept as snapshots
+//! (see [`Snapshot`]), and writes what they say to a [`Sink`].
 //!
 //! The agent looks at every file by timer, every [`POLL_INTERVAL`], so a new prompt is a
 //! record within seconds and the code needs nothing from the platform. A file that was never
@@ -20,7 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use connectors::{FileState, Line, Parsed, Record, Registry, Tool, Turn, for_each_line};
+use connectors::{
+    ClaudeApp, Conversation, FileState, Line, Parsed, Record, Registry, Snapshot, Tool, Turn,
+    for_each_line,
+};
 
 use crate::erase::OwnStore;
 use crate::records::{FileProgress, FileSink, Progress, Recorder, Sink};
@@ -53,6 +57,8 @@ pub struct ToolStatus {
     /// saved position moves on, and nothing is stored. After an erasure nothing is read from
     /// the tool at all until it is switched on. As of the last pass.
     pub off: bool,
+    /// The app of a snapshot source is not installed, as of the last pass.
+    pub not_installed: bool,
     /// Why this tool is not followed fully: its files cannot be listed (or some directories
     /// cannot), the records cannot be written, the progress cannot be saved, the follower did
     /// not start, or it stopped. Several causes are joined with `; `.
@@ -69,6 +75,9 @@ impl ToolStatus {
         if let Some(fields) = value.as_object_mut() {
             if self.off {
                 fields.insert("off".into(), true.into());
+            }
+            if self.not_installed {
+                fields.insert("not_installed".into(), true.into());
             }
             if let Some(at) = self.last_turn.and_then(rfc3339) {
                 fields.insert("last_turn".into(), at.into());
@@ -298,21 +307,44 @@ fn is_on(switch: Option<&Switch>, tool: &str) -> bool {
 /// turn is in the sink. It must not block.
 pub type Observer = Arc<dyn Fn(&Turn) + Send + Sync>;
 
+/// The names of the snapshot sources [`snapshots`] gives.
+pub const SNAPSHOT_SOURCES: [&str; 1] = [connectors::CLAUDE_APP];
+
+/// The names of every source the follower reads: the tools of `tools`, then the snapshot sources.
+#[must_use]
+pub fn source_names(tools: &Registry) -> Vec<&'static str> {
+    tools
+        .iter()
+        .map(Tool::name)
+        .chain(SNAPSHOT_SOURCES)
+        .collect()
+}
+
+/// The snapshot sources the agent reads. Each copies its store into a folder of its own under
+/// `data_dir` while it reads it.
+#[must_use]
+pub fn snapshots(data_dir: &Path) -> Vec<Box<dyn Snapshot>> {
+    vec![Box::new(ClaudeApp::new(data_dir.join("claude-app-copy")))]
+}
+
 /// Starts a follower of `tools` on a thread of its own, so that neither the first scan nor a
 /// slow disk holds up `status`. `paths` is the home directory and the data directory; the
 /// follower stops when the returned sender is dropped. When it cannot start (no home, an
 /// unreadable progress file), the reason is in the status of every tool.
 #[must_use]
 pub fn spawn(tools: Registry, paths: io::Result<(PathBuf, PathBuf)>, stats: &Stats) -> Sender<()> {
-    spawn_observed(tools, paths, stats, None, None, None, None)
+    spawn_observed(tools, Vec::new(), paths, stats, None, None, None, None)
 }
 
-/// Like [`spawn`], with a [`Switch`] that decides per tool whether its sessions are stored, an
-/// [`Observer`] that is told of every new turn, a [`Recorder`] that is told of every new
-/// record and the [`Erase`] handle of the person's erasure.
+/// Like [`spawn`], with the [`Snapshot`] sources to read besides the tools, a [`Switch`] that
+/// decides per source whether its sessions are stored, an [`Observer`] that is told of every new
+/// turn, a [`Recorder`] that is told of every new record and the [`Erase`] handle of the
+/// person's erasure.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_observed(
     tools: Registry,
+    snapshots: Vec<Box<dyn Snapshot>>,
     paths: io::Result<(PathBuf, PathBuf)>,
     stats: &Stats,
     switch: Option<Switch>,
@@ -321,7 +353,11 @@ pub fn spawn_observed(
     erase: Option<Erase>,
 ) -> Sender<()> {
     let (alive, stop) = mpsc::channel::<()>();
-    let names: Vec<&'static str> = tools.iter().map(Tool::name).collect();
+    let names: Vec<&'static str> = tools
+        .iter()
+        .map(Tool::name)
+        .chain(snapshots.iter().map(|s| s.name()))
+        .collect();
     let follower = paths
         .and_then(|(home, data)| {
             let mut sink = FileSink::new(&data);
@@ -333,6 +369,7 @@ pub fn spawn_observed(
             }
             Follower::new(tools, &home, sink, stats.clone())
         })
+        .map(|follower| follower.with_snapshots(snapshots))
         .map(|follower| match switch {
             Some(switch) => follower.with_switch(switch),
             None => follower,
@@ -368,9 +405,10 @@ pub fn spawn_observed(
     alive
 }
 
-/// Reads the new lines of every file of every tool.
+/// Reads the new lines of every file of every tool, and the new records of every snapshot source.
 pub struct Follower<S: Sink> {
     tools: Registry,
+    snapshots: Vec<Box<dyn Snapshot>>,
     home: PathBuf,
     sink: S,
     progress: Progress,
@@ -384,8 +422,8 @@ pub struct Follower<S: Sink> {
     switch: Option<Switch>,
     /// The person's erasure, when the follower is given one.
     erase: Option<Erase>,
-    /// The tools that have not been read while switched on since an erasure: while one is off,
-    /// its files are not read, so no position is saved for it.
+    /// The tools and sources that have not been read while switched on since an erasure: while
+    /// one is off, it is not read, so no position is saved for it.
     unsettled: HashSet<&'static str>,
 }
 
@@ -404,6 +442,7 @@ impl<S: Sink> Follower<S> {
         }
         Ok(Self {
             tools,
+            snapshots: Vec::new(),
             home: home.to_owned(),
             sink,
             progress,
@@ -417,6 +456,26 @@ impl<S: Sink> Follower<S> {
         })
     }
 
+    /// Reads these sources too, each pass after the tools. Given before [`Follower::with_erase`],
+    /// which takes the names of the sources there are by then.
+    #[must_use]
+    pub fn with_snapshots(mut self, snapshots: Vec<Box<dyn Snapshot>>) -> Self {
+        for snapshot in &snapshots {
+            self.stats.update(snapshot.name(), |s| s.scanning = true);
+        }
+        self.snapshots = snapshots;
+        self
+    }
+
+    /// The names of the tools and of the snapshot sources.
+    fn names(&self) -> Vec<&'static str> {
+        self.tools
+            .iter()
+            .map(Tool::name)
+            .chain(self.snapshots.iter().map(|s| s.name()))
+            .collect()
+    }
+
     /// Lets the person's erasure reach this follower: the pass that follows an erasure starts
     /// from nothing read.
     #[must_use]
@@ -425,19 +484,22 @@ impl<S: Sink> Follower<S> {
         // not read while it is off, and the positions it may have left (a crash in the middle of
         // the erasure, or before they were all saved) are dropped: its files are read from nothing,
         // and a record already in the files is dropped as a replay.
-        let names: Vec<&'static str> = self.tools.iter().map(Tool::name).collect();
-        self.unsettled = erase.waiting(&names);
+        self.unsettled = erase.waiting(&self.names());
         let roots: Vec<PathBuf> = self
             .tools
             .iter()
             .filter(|tool| self.unsettled.contains(tool.name()))
             .map(|tool| tool.root(&self.home))
             .collect();
-        let before = self.progress.files.len();
+        let before = (self.progress.files.len(), self.progress.seen.len());
         self.progress
             .files
             .retain(|path, _| !roots.iter().any(|root| Path::new(path).starts_with(root)));
-        self.saver.dirty = self.progress.files.len() != before;
+        let unsettled = &self.unsettled;
+        self.progress
+            .seen
+            .retain(|source, _| !unsettled.contains(source.as_str()));
+        self.saver.dirty = (self.progress.files.len(), self.progress.seen.len()) != before;
         self.erase = Some(erase);
         self
     }
@@ -455,7 +517,10 @@ impl<S: Sink> Follower<S> {
             self.read_errors.clear();
             self.saver = Saver::new();
             self.sink.forget();
-            self.unsettled = self.tools.iter().map(Tool::name).collect();
+            for snapshot in &mut self.snapshots {
+                snapshot.forget();
+            }
+            self.unsettled = self.names().into_iter().collect();
         }
     }
 
@@ -483,8 +548,10 @@ impl<S: Sink> Follower<S> {
         let erase = self.erase.clone();
         let _pass = erase.as_ref().map(|e| crate::sync::lock(&e.0.pass));
         self.forget_if_erased();
+        let names = self.names();
         let Self {
             tools,
+            snapshots,
             home,
             sink,
             progress,
@@ -514,13 +581,7 @@ impl<S: Sink> Follower<S> {
                     continue;
                 }
             };
-            let problem = listing.problems.split_first().map(|(first, rest)| {
-                if rest.is_empty() {
-                    first.clone()
-                } else {
-                    format!("{first} (and {} more)", rest.len())
-                }
-            });
+            let problem = summary(&listing.problems);
             if stats.set_error(tool.name(), problem.clone())
                 && let Some(message) = problem
             {
@@ -571,11 +632,29 @@ impl<S: Sink> Follower<S> {
             }
             stats.update(tool.name(), |s| s.scanning = false);
         }
+        for snapshot in snapshots.iter_mut() {
+            if failure.is_some() {
+                break;
+            }
+            let mut ctx = SnapshotCtx {
+                home,
+                sink: &mut *sink,
+                progress: &mut *progress,
+                stats,
+                saver: &mut *saver,
+                read_errors: &mut *read_errors,
+                switch: switch.as_ref(),
+                unsettled: &mut *unsettled,
+            };
+            if let Err(e) = ctx.read(snapshot.as_mut()) {
+                failure = Some(e);
+            }
+        }
         // Kept dirty when it fails, so the next pass saves again.
         let flushed = saver.flush(sink, progress);
         if let Err(e) = &flushed {
-            for tool in tools.iter() {
-                stats.add_error(tool.name(), &format!("cannot save progress: {e}"));
+            for name in &names {
+                stats.add_error(name, &format!("cannot save progress: {e}"));
             }
         }
         // The positions of the tools read while on are on the disk: only the others still wait.
@@ -584,8 +663,8 @@ impl<S: Sink> Follower<S> {
             && let Some(erase) = &erase
             && let Err(e) = erase.settle(unsettled)
         {
-            for tool in tools.iter() {
-                stats.add_error(tool.name(), &format!("cannot update the erasure note: {e}"));
+            for name in &names {
+                stats.add_error(name, &format!("cannot update the erasure note: {e}"));
             }
         }
         failure.map_or(flushed, Err)
@@ -609,6 +688,147 @@ impl<S: Sink> Follower<S> {
                 Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
             }
         }
+    }
+}
+
+/// The first problem, with how many more there are; none when there is none.
+fn summary(problems: &[String]) -> Option<String> {
+    problems.split_first().map(|(first, rest)| {
+        if rest.is_empty() {
+            first.clone()
+        } else {
+            format!("{first} (and {} more)", rest.len())
+        }
+    })
+}
+
+/// Stores a record of `source`, after the mark of its minute when it is a turn, and counts a
+/// turn the sink did not have.
+fn store<S: Sink>(sink: &mut S, stats: &Stats, source: &str, record: &Record) -> io::Result<()> {
+    // Every minute with a log line has a mark, a turn's minute included; the sink keeps one
+    // mark per session and minute, so a replay adds nothing.
+    if let Record::Turn(turn) = record {
+        sink.append(&Record::Mark(turn.mark()))?;
+    }
+    // A record the sink had stored already is a replay, not a turn read now.
+    if sink.append(record)? && matches!(record, Record::Turn(_)) {
+        let now = SystemTime::now();
+        stats.update(source, |s| {
+            s.turns += 1;
+            s.last_turn = Some(now);
+        });
+    }
+    Ok(())
+}
+
+/// What a pass needs to read one snapshot source.
+struct SnapshotCtx<'a, S: Sink> {
+    home: &'a Path,
+    sink: &'a mut S,
+    progress: &'a mut Progress,
+    stats: &'a Stats,
+    saver: &'a mut Saver,
+    read_errors: &'a mut HashMap<String, String>,
+    switch: Option<&'a Switch>,
+    unsettled: &'a mut HashSet<&'static str>,
+}
+
+impl<S: Sink> SnapshotCtx<'_, S> {
+    /// Reads a source when it changed. A record whose id was not seen in its session is new, and
+    /// is stored while the source is on; while it is off it is only noted as seen, so what was
+    /// said meanwhile is never stored. Seen ids are kept until an erasure, also those of records
+    /// and sessions the store no longer holds, since the app may load them again. After an
+    /// erasure a source that is off is not read at all, so it is collected whole once it is
+    /// switched on. A conversation that cannot be read keeps its ids, the others are read, and
+    /// the status tells why.
+    ///
+    /// # Errors
+    /// The sink cannot write. Nothing of this read is noted as seen then, so the next pass reads
+    /// the source again, and the sink drops what it stored already.
+    fn read(&mut self, snapshot: &mut dyn Snapshot) -> io::Result<()> {
+        let name = snapshot.name();
+        let on = is_on(self.switch, name);
+        let installed = snapshot.installed(self.home);
+        self.stats.update(name, |s| {
+            s.off = !on;
+            s.not_installed = !installed;
+        });
+        if !on && self.unsettled.contains(name) {
+            // Nothing to scan while it waits for the switch, as for a tool.
+            self.stats.update(name, |s| s.scanning = false);
+            return Ok(());
+        }
+        let conversations = match snapshot.read(self.home) {
+            Ok(Some(conversations)) => conversations,
+            Ok(None) => {
+                self.settle(name, on);
+                return Ok(());
+            }
+            Err(e) => {
+                let message = format!("cannot read: {e}");
+                if self.stats.set_error(name, Some(message.clone())) {
+                    say(&format!("{name}: {message}"));
+                }
+                return Ok(());
+            }
+        };
+        let known = self.progress.seen.remove(name).unwrap_or_default();
+        let mut seen = known.clone();
+        let mut unreadable = Vec::new();
+        let mut failure = None;
+        for Conversation { session, records } in conversations {
+            let key = format!("{name}: {session}");
+            let records = match records {
+                Ok(records) => records,
+                Err(e) => {
+                    if is_new(self.read_errors, &key, &e) {
+                        say(&format!("{name}: cannot read the session {session}: {e}"));
+                    }
+                    unreadable.push(format!("cannot read the session {session}: {e}"));
+                    continue;
+                }
+            };
+            self.read_errors.remove(&key);
+            let ids = seen.entry(session).or_default();
+            for identified in records {
+                if on
+                    && !ids.contains(&identified.id)
+                    && let Err(e) = store(self.sink, self.stats, name, &identified.record)
+                {
+                    failure = Some(e);
+                    break;
+                }
+                ids.insert(identified.id);
+            }
+            if failure.is_some() {
+                break;
+            }
+        }
+        if let Some(e) = failure {
+            self.progress.seen.insert(name.to_owned(), known);
+            snapshot.forget();
+            self.stats
+                .set_error(name, Some(format!("cannot write records: {e}")));
+            return Err(e);
+        }
+        self.saver.dirty |= seen != known;
+        if !seen.is_empty() {
+            self.progress.seen.insert(name.to_owned(), seen);
+        }
+        self.stats.set_error(name, summary(&unreadable));
+        self.stats
+            .update(name, |s| s.unreadable = unreadable.len() as u64);
+        self.settle(name, on);
+        Ok(())
+    }
+
+    /// The source has been read whole, as of the last read: it is no longer scanning, and, when
+    /// it was on for the whole read, no longer waits for the switch after an erasure.
+    fn settle(&mut self, name: &'static str, on: bool) {
+        if on && is_on(self.switch, name) {
+            self.unsettled.remove(name);
+        }
+        self.stats.update(name, |s| s.scanning = false);
     }
 }
 
@@ -723,30 +943,11 @@ impl<S: Sink> Ctx<'_, S> {
                     None
                 }
             };
-            if let Some(record) = record.filter(|_| collect) {
-                // Every minute with a log line has a mark, a turn's minute included; the
-                // sink keeps one mark per session and minute, so a replay adds nothing.
-                if let Record::Turn(turn) = &record
-                    && let Err(e) = self.sink.append(&Record::Mark(turn.mark()))
-                {
-                    sink_error = Some(e);
-                    return false;
-                }
-                match self.sink.append(&record) {
-                    // A record the sink had stored already is a replay, not a turn read now.
-                    Ok(true) if matches!(record, Record::Turn(_)) => {
-                        let now = SystemTime::now();
-                        self.count(|s| {
-                            s.turns += 1;
-                            s.last_turn = Some(now);
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        sink_error = Some(e);
-                        return false;
-                    }
-                }
+            if let Some(record) = record.filter(|_| collect)
+                && let Err(e) = store(self.sink, self.stats, self.tool.name(), &record)
+            {
+                sink_error = Some(e);
+                return false;
             }
             offset = end;
             self.saver.line_done();

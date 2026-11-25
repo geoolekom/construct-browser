@@ -27,11 +27,11 @@ pub fn claude_app_cache(home: &Path) -> PathBuf {
         .join("IndexedDB")
 }
 
-fn leveldb_dir(cache: &Path) -> PathBuf {
+pub(crate) fn leveldb_dir(cache: &Path) -> PathBuf {
     cache.join(format!("{ORIGIN}.indexeddb.leveldb"))
 }
 
-fn blob_dir(cache: &Path) -> PathBuf {
+pub(crate) fn blob_dir(cache: &Path) -> PathBuf {
     cache.join(format!("{ORIGIN}.indexeddb.blob"))
 }
 

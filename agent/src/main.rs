@@ -204,8 +204,7 @@ fn run() -> std::io::Result<()> {
     let screen_alive = screen.as_ref().map(construct_agent::screen::Screen::spawn);
     // What `memory-erase` clears besides the host's copy; the follower is given the handle below.
     let follow_erase = construct_agent::records::data_dir().ok().map(|dir| {
-        let tools = connectors::Registry::builtin();
-        let names: Vec<&str> = tools.iter().map(connectors::Tool::name).collect();
+        let names = construct_agent::follow::source_names(&connectors::Registry::builtin());
         construct_agent::follow::Erase::new(&dir, &names)
     });
     if let (Some(manage), Some(sessions)) = (&manage, &follow_erase) {
@@ -625,19 +624,30 @@ fn spawn_follower(
     let tools = connectors::Registry::builtin();
     let Some(settings) = settings else {
         // Without the user's switches nothing is collected: no reader starts.
-        for tool in tools.iter() {
-            stats.not_started(tool.name(), "not started: settings unavailable");
+        for name in construct_agent::follow::source_names(&tools) {
+            stats.not_started(name, "not started: settings unavailable");
         }
         return std::sync::mpsc::channel().0;
     };
     let paths = construct_agent::ipc::absolute_env_path("HOME")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))
         .and_then(|home| Ok((home, construct_agent::records::data_dir()?)));
+    let snapshots = match &paths {
+        Ok((_, data)) => construct_agent::follow::snapshots(data),
+        // The follower tells the tools why; the sources it is given none of.
+        Err(e) => {
+            for name in construct_agent::follow::SNAPSHOT_SOURCES {
+                stats.not_started(name, &format!("not started: {e}"));
+            }
+            Vec::new()
+        }
+    };
     let settings = settings.clone();
     let switch: construct_agent::follow::Switch =
         std::sync::Arc::new(move |tool| settings.collects(tool));
     construct_agent::follow::spawn_observed(
         tools,
+        snapshots,
         paths,
         stats,
         Some(switch),

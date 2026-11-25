@@ -392,6 +392,7 @@ test('a turn stored a few seconds ago shows collecting for the tool in the sideb
       'claude-code': { turns: 12, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
       codex: { turns: 0, skipped: 0, scanning: false },
       chatgpt: { turns: 3, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
+      'claude-app': { turns: 3, skipped: 0, scanning: false, last_turn: secondsAgo(5) },
     },
   });
   await withStandIn(session, reply, async (page) => {
@@ -399,6 +400,10 @@ test('a turn stored a few seconds ago shows collecting for the tool in the sideb
     await expect(page.locator('#sidebar-connector-chatgpt')).toContainText('ChatGPT');
     await expect(
       page.locator('#connector-chatgpt').getByRole('heading', { name: 'ChatGPT' }),
+    ).toBeVisible();
+    await expect(page.locator('#sidebar-connector-claude-app')).toContainText('Claude');
+    await expect(
+      page.locator('#connector-claude-app').getByRole('heading', { name: 'Claude', exact: true }),
     ).toBeVisible();
     await expect(page.locator('#sidebar-connector-claude-code')).toHaveAttribute(
       'data-state',

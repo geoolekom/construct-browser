@@ -17,7 +17,7 @@ use construct_agent::activity::Feed;
 use construct_agent::chat::{Chat, Link};
 use construct_agent::dashboard_setup::SetupJob;
 use construct_agent::erase::{OwnStore, OwnStores, own_stores};
-use construct_agent::follow::{Erase, Follower, Stats};
+use construct_agent::follow::{self, Erase, Follower, Stats};
 use construct_agent::manage::Manager;
 use construct_agent::records::{FileSink, Sink};
 use construct_agent::settings::{Collection, Settings, Update};
@@ -46,6 +46,24 @@ fn registry() -> Registry {
         Box::new(Under(ClaudeCode, ".claude/projects")),
         Box::new(Under(Codex, ".codex/sessions")),
     ])
+}
+
+/// The names the erasure owns, as the agent gives them.
+fn sources() -> Vec<&'static str> {
+    follow::source_names(&registry())
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let path = entry.unwrap().path();
+        let target = to.join(path.file_name().unwrap());
+        if path.is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            fs::copy(&path, &target).unwrap();
+        }
+    }
 }
 
 fn append(path: &Path, text: &str) {
@@ -135,7 +153,7 @@ impl Stand {
         let chat = Chat::new(settings.clone(), &data, rt.handle().clone(), deadlines())
             .unwrap()
             .with_link(link);
-        let erase = Erase::new(&data, &["claude-code", "codex"]);
+        let erase = Erase::new(&data, &sources());
         manage.set_own_stores(own_stores(
             &erase,
             Some(&chat),
@@ -176,6 +194,7 @@ impl Stand {
             self.stats.clone(),
         )
         .unwrap()
+        .with_snapshots(follow::snapshots(&self.data))
         .with_switch(Arc::new(move |tool| settings.collects(tool)))
         .with_erase(erase)
     }
@@ -183,7 +202,15 @@ impl Stand {
     /// A follower in a new process: its `Erase` handle knows of an erasure only what is on the
     /// disk.
     fn restarted(&self) -> Follower<FileSink> {
-        self.follower_with(Erase::new(&self.data, &["claude-code", "codex"]))
+        self.follower_with(Erase::new(&self.data, &sources()))
+    }
+
+    /// The Claude app has its cache (the test one of the reader).
+    fn fill_app(&self, follower: &mut Follower<FileSink>) {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../connectors/tests/fixtures/claude-app/IndexedDB");
+        copy_dir(&fixture, &connectors::claude_app_cache(&self.home));
+        follower.pass().unwrap();
     }
 
     /// Whether the saved position of a file is at its end.
@@ -338,6 +365,28 @@ fn the_erase_command_leaves_no_record_no_position_no_journal_and_no_conversation
         }
     );
     assert_eq!(route_calls(&stand.host), ["GET settings", "POST erasure"]);
+}
+
+#[test]
+fn the_erase_command_takes_the_claude_app_sessions_and_a_switch_on_collects_them_again() {
+    let stand = Stand::new("http://127.0.0.1:9/v1");
+    let mut follower = stand.follower();
+    stand.fill_app(&mut follower);
+    let short = ["Готово: файл создан.", "Создай файл cowork-test.txt"];
+    assert_eq!(stand.stored_texts("claude-app", "cse_fixture_short"), short);
+    let progress = FileSink::new(&stand.data).load_progress().unwrap();
+    assert!(progress.seen.contains_key("claude-app"));
+
+    stand.erase_command();
+    assert!(stand.records().is_empty());
+    assert!(!stand.progress_file().exists());
+    // While collection is off after the erasure, the app is not read again.
+    follower.pass().unwrap();
+    assert!(stand.records().is_empty());
+
+    stand.switch_on();
+    follower.pass().unwrap();
+    assert_eq!(stand.stored_texts("claude-app", "cse_fixture_short"), short);
 }
 
 #[test]

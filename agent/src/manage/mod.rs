@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use connectors::{Registry, Role, Tool, Turn, compare_times};
+use connectors::{Registry, Role, Turn, compare_times};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -254,7 +254,7 @@ impl Manager {
         timing: Timing,
     ) -> io::Result<Self> {
         create_private_dir(data_dir)?;
-        let mut tools: Vec<&'static str> = Registry::builtin().iter().map(Tool::name).collect();
+        let mut tools = crate::follow::source_names(&Registry::builtin());
         tools.push(crate::chat::SOURCE);
         Ok(Self {
             inner: Arc::new(Inner {

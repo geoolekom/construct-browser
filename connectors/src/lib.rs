@@ -8,6 +8,7 @@
 
 mod chatgpt;
 mod claude_app;
+mod claude_app_records;
 mod claude_code;
 mod codex;
 mod indexeddb;
@@ -15,12 +16,14 @@ mod leveldb;
 mod lines;
 mod parsed;
 mod record;
+mod snapshot;
 mod text;
 mod tool;
 mod v8;
 
 pub use chatgpt::ChatGpt;
 pub use claude_app::{claude_app_cache, copy_claude_app_cache, read_claude_app_cache};
+pub use claude_app_records::{CLAUDE_APP, ClaudeApp, claude_app_conversation, claude_app_folders};
 pub use claude_code::ClaudeCode;
 pub use codex::Codex;
 pub use indexeddb::{Error as CacheError, StoredValue, ValueError};
@@ -29,4 +32,5 @@ pub use parsed::Parsed;
 pub use record::{
     Author, Mark, Record, Role, ToolCall, ToolResult, Turn, compare_times, minute_of,
 };
+pub use snapshot::{Conversation, Identified, Snapshot};
 pub use tool::{FileState, Listing, Registry, Tool, tools};

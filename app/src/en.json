@@ -25,6 +25,7 @@
   "StatusPage.Connector.claude-code": "Claude Code",
   "StatusPage.Connector.codex": "Codex",
   "StatusPage.Connector.chatgpt": "ChatGPT",
+  "StatusPage.Connector.claude-app": "Claude",
   "StatusPage.Connector.collecting": "collecting",
   "StatusPage.Connector.scanning": "scanning",
   "StatusPage.Connector.off": "off",

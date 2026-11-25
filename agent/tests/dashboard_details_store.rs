@@ -206,7 +206,7 @@ async fn the_state_is_empty_when_there_are_no_records() {
         .unwrap();
     assert_eq!(
         call(&stand.socket, "dashboard-state".to_owned()).await,
-        json!({ "state": "empty", "tools_off": ["claude-code", "codex", "chatgpt"] })
+        json!({ "state": "empty", "tools_off": ["claude-code", "codex", "chatgpt", "claude-app"] })
     );
     task.abort();
     let _ = task.await;

@@ -215,6 +215,7 @@ async fn a_record_appended_to_a_log_shows_in_the_store_within_ten_seconds() {
     assert!(follow::POLL_INTERVAL <= Duration::from_secs(5));
     let alive = follow::spawn_observed(
         Registry::new(vec![Box::new(Fake)]),
+        Vec::new(),
         Ok((stand.home(), stand.data())),
         &Stats::default(),
         None,

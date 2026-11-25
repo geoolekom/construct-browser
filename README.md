@@ -38,14 +38,16 @@ Open Status in the app to see why the Construct agent is unavailable on Windows.
 
 ## What it does today
 
-- **Reads your coding tools.** The agent follows the session logs of Claude Code and Codex and turns every
-  prompt and answer into a record, within seconds. Log files are only opened for reading.
+- **Reads your AI tools.** The agent follows the session logs of Claude Code and Codex, and the chats
+  and Cowork sessions the Claude app keeps on a Mac, and turns every prompt and answer into a record,
+  within seconds. Their files are only opened for reading; the Claude app's cache is read from a copy
+  that is removed after each read.
 - **Keeps the records on your computer.** The agent stores the records as plain files in its data directory.
 - **Runs the Construct gear.** On Linux x86_64 and on macOS (Apple Silicon) the agent starts the Construct gear inside itself, next to an
   embedded PostgreSQL database with pgvector that serves graph storage. Nothing listens beyond your machine:
   the agent socket and the database socket are open to your user only, and the gear's REST interface is on the
   loopback address and needs a token that only your user can read.
-- **Builds your profile from what you type.** Every new prompt in Claude Code or Codex goes to the
+- **Builds your profile from what you type.** Every new prompt in Claude Code, Codex or the Claude app goes to the
   Construct gear with the ten turns before it as context, and the gear turns it into facts about you.
   Prompts from before the first start go out only when you ask for them (see
   [Your profile from past prompts](#your-profile-from-past-prompts)).

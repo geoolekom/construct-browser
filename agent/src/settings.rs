@@ -28,7 +28,7 @@ pub const FILE_NAME: &str = "settings.json";
 pub const VERSION: u32 = 1;
 
 /// The tools whose sessions are read, by the name their sessions carry in the store.
-pub const TOOLS: [&str; 3] = ["claude-code", "codex", "chatgpt"];
+pub const TOOLS: [&str; 4] = ["claude-code", "codex", "chatgpt", connectors::CLAUDE_APP];
 
 /// What the readers collect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,7 +342,7 @@ impl Settings {
 
     /// Whether the sessions of the source called `tool` (a connector's name, or the chat's) may be stored:
     /// collection is on, and so is the tool's own switch. A tool the settings do not know is off.
-    /// The chat has no switch of its own: it follows collection alone.
+    /// The chat and the Claude app have no switch of their own: they follow collection alone.
     #[must_use]
     pub fn collects(&self, tool: &str) -> bool {
         let c = self.collection();
@@ -352,7 +352,7 @@ impl Settings {
                 // The Codex switch also answers for the ChatGPT app's chats.
                 "codex" | "chatgpt" => c.codex,
                 crate::screen::SOURCE => c.screen,
-                crate::chat::SOURCE => true,
+                crate::chat::SOURCE | connectors::CLAUDE_APP => true,
                 _ => false,
             }
     }
@@ -478,7 +478,7 @@ mod tests {
             r#"{"collection":{"claude_code":false,"codex":false}}"#,
         ))
         .unwrap();
-        assert!(s.collects("chat"));
+        assert!(s.collects("chat") && s.collects("claude-app"));
         s.apply(update(
             r#"{"collection":{"claude_code":true,"codex":true}}"#,
         ))
@@ -493,7 +493,11 @@ mod tests {
         s.apply(update(r#"{"collection":{"enabled":false,"codex":true}}"#))
             .unwrap();
         assert!(!s.collects("claude-code") && !s.collects("codex") && !s.collects("chatgpt"));
-        assert_eq!(s.tools_off(), ["claude-code", "codex", "chatgpt"]);
+        assert!(!s.collects("claude-app"));
+        assert_eq!(
+            s.tools_off(),
+            ["claude-code", "codex", "chatgpt", "claude-app"]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

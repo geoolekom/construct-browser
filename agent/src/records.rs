@@ -1,10 +1,11 @@
 //! Where the records read from the coding tools' session logs are kept: JSON lines in
 //! `records/<tool>/<session>.jsonl` in the agent's data directory, plus the read offset and
-//! per-file state of every log file. Plain files, no database. A chat keeps its conversations
+//! per-file state of every log file, and the ids of the records seen in a source kept as a
+//! snapshot (the Claude app). Plain files, no database. A chat keeps its conversations
 //! the same way, as the source `chat`, and is the only writer of tool call and tool result
 //! records.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -49,10 +50,14 @@ pub struct FileProgress {
     pub state: FileState,
 }
 
-/// The progress of every log file, by path.
+/// The progress of every log file, by path, and the records seen of every snapshot source.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Progress {
     pub files: BTreeMap<String, FileProgress>,
+    /// By source, then session: the ids of every record read from the source since the last
+    /// erasure. Progress saved before snapshot sources existed reads as none seen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub seen: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
 }
 
 pub use chat_core::records::SessionInfo;

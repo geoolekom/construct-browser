@@ -37,7 +37,7 @@ impl ClaudeCode {
     }
 }
 
-fn has_harness_tag(text: &str) -> bool {
+pub(crate) fn has_harness_tag(text: &str) -> bool {
     let text = text.trim_start();
     HARNESS_TAGS.iter().any(|tag| text.starts_with(tag))
 }
